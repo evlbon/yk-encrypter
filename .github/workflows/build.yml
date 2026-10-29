@@ -1,15 +1,42 @@
-name: build
+name: release
 
+# Сборка и релиз происходят только при бампе версии в src-tauri/tauri.conf.json:
+# если тега v<version> ещё нет — собираем Windows + macOS и публикуем GitHub Release.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  tauri:
-    name: tauri (${{ matrix.os }})
+  version:
+    name: check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "tag v$VERSION already exists — nothing to release"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new version $VERSION — will build and release"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -40,12 +67,42 @@ jobs:
       - name: Build bundles
         run: npx tauri build
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: yk-encrypter-${{ matrix.os }}
+          name: bundles-${{ matrix.os }}
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/dmg/*.dmg
+
+  release:
+    name: publish v${{ needs.version.outputs.version }}
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ls -la bundles
+          cat > notes.md <<'EOF'
+          Installers are not code-signed.
+
+          - **macOS**: on first launch macOS will refuse the app → System Settings → Privacy & Security → *Open Anyway*.
+          - **Windows**: SmartScreen → *More info* → *Run anyway*. The built-in smart card service is enough, no drivers.
+
+          Requires a YubiKey with a P-256 key in PIV slot 9d (`--pin-policy always --touch-policy always`), see README.
+          EOF
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            bundles/*

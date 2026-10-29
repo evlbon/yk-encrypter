@@ -60,10 +60,19 @@ printf '%s' 'secret text' | ykenc enc piv-9d.pub.pem > msg.txt       # encrypt (
 ykenc dec < msg.txt                                                   # decrypt: PIN prompt + touch
 ```
 
-## CI
+## Releases
 
-`.github/workflows/build.yml` builds on every push to `main`: Windows `.msi` + NSIS `.exe`, macOS `.dmg` (Apple Silicon).
-Download them from the run's **Artifacts** section. Windows can only be built there — Tauri does not cross-compile.
+The version lives in `src-tauri/tauri.conf.json` (mirrored in `Cargo.toml` and `package.json`). CI runs on every push
+to `main` but only *builds and publishes* when the version has no tag yet:
+
+```sh
+npm run bump 1.0.1          # updates the three files + lock files
+git commit -am "v1.0.1" && git push
+```
+
+`.github/workflows/build.yml` then builds Windows `.msi` + NSIS `.exe` and macOS `.dmg` (Apple Silicon), creates the
+tag `v1.0.1` and a GitHub Release with the installers attached. Pushes without a version bump are a no-op in CI.
+Windows can only be built there — Tauri does not cross-compile.
 
 Installers are unsigned. macOS: System Settings → Privacy & Security → *Open Anyway* on first launch.
 Windows: SmartScreen → *More info* → *Run anyway*. The Windows smart card service is built in; no drivers needed.

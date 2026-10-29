@@ -6,6 +6,7 @@
   "scripts": {
     "build:ui": "esbuild ui/main.ts --bundle --format=esm --outfile=ui/dist/main.js --target=es2022",
     "typecheck": "tsc -p ui/tsconfig.json",
+    "bump": "node scripts/bump.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri"
