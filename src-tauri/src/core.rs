@@ -21,34 +21,74 @@ const TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const HKDF_INFO: &[u8] = b"yk-encrypter/piv-p256/v1/aes-256-gcm";
 
+/// Ошибки ядра. Display — английский текст для CLI/логов; UI локализует по `code()`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Неверный формат данных: {0}")]
+    #[error("bad payload format: {0}")]
     BadFormat(String),
-    #[error("Не удалось расшифровать: другой YubiKey или данные повреждены")]
+    #[error("decryption failed: wrong YubiKey or corrupted payload")]
     DecryptFailed,
-    #[error("Неверный публичный ключ: {0}")]
+    #[error("bad public key: {0}")]
     BadKey(String),
-    #[error("Служба смарт-карт недоступна ({0})")]
+    #[error("smart card service unavailable ({0})")]
     NoService(pcsc::Error),
-    #[error("YubiKey не найден — вставьте ключ")]
+    #[error("YubiKey not found — plug it in")]
     YubiKeyNotFound,
-    #[error("Ошибка PC/SC: {0}")]
+    #[error("PC/SC error: {0}")]
     Pcsc(#[from] pcsc::Error),
-    #[error("PIN должен быть длиной 6–8 символов")]
+    #[error("PIN must be 6–8 characters")]
     PinFormat,
-    #[error("Неверный PIN, осталось попыток: {0}")]
+    #[error("wrong PIN, {0} tries left")]
     WrongPin(u8),
-    #[error("PIN заблокирован. Разблокируйте через PUK: ykman piv access unblock-pin")]
+    #[error("PIN is blocked; unblock it with PUK: ykman piv access unblock-pin")]
     PinBlocked,
-    #[error("Карта отказала: PIN не проверен")]
+    #[error("card refused: PIN not verified")]
     SecurityStatus,
-    #[error("Слот 9d пуст или ключ не P-256")]
+    #[error("slot 9d is empty or holds a non-P-256 key")]
     SlotEmpty,
-    #[error("Неожиданный ответ YubiKey: {0}")]
+    #[error("unexpected YubiKey response: {0}")]
     Unexpected(String),
-    #[error("Ошибка карты: ins=0x{ins:02x} sw=0x{sw:04x}")]
+    #[error("card error: ins=0x{ins:02x} sw=0x{sw:04x}")]
     Apdu { ins: u8, sw: u16 },
+}
+
+impl Error {
+    /// Стабильный код для локализации в UI.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::BadFormat(_) => "bad_format",
+            Error::DecryptFailed => "decrypt_failed",
+            Error::BadKey(_) => "bad_key",
+            Error::NoService(_) => "no_service",
+            Error::YubiKeyNotFound => "yubikey_not_found",
+            Error::Pcsc(_) => "pcsc",
+            Error::PinFormat => "pin_format",
+            Error::WrongPin(_) => "wrong_pin",
+            Error::PinBlocked => "pin_blocked",
+            Error::SecurityStatus => "security_status",
+            Error::SlotEmpty => "slot_empty",
+            Error::Unexpected(_) => "unexpected",
+            Error::Apdu { .. } => "apdu",
+        }
+    }
+
+    /// Оставшиеся попытки PIN (только для WrongPin).
+    pub fn pin_tries(&self) -> Option<u8> {
+        match self {
+            Error::WrongPin(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Техническая деталь для показа после локализованного текста (sw, причина парсинга и т.п.).
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Error::BadFormat(s) | Error::BadKey(s) | Error::Unexpected(s) => Some(s.clone()),
+            Error::NoService(e) | Error::Pcsc(e) => Some(e.to_string()),
+            Error::Apdu { ins, sw } => Some(format!("ins=0x{ins:02x} sw=0x{sw:04x}")),
+            _ => None,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -72,18 +112,18 @@ pub fn encrypt(plaintext: &str, recipient_pem: &str) -> Result<String> {
 pub fn decrypt(payload: &str, ecdh: impl FnOnce(&[u8]) -> Result<Vec<u8>>) -> Result<String> {
     let body = payload
         .strip_prefix(PREFIX)
-        .ok_or_else(|| Error::BadFormat(format!("ожидается {PREFIX}…")))?;
+        .ok_or_else(|| Error::BadFormat(format!("expected {PREFIX}…")))?;
     let blob = URL_SAFE_NO_PAD
         .decode(body.trim())
         .map_err(|_| Error::BadFormat("base64url".into()))?;
     if blob.len() < POINT_LEN + IV_LEN + TAG_LEN {
-        return Err(Error::BadFormat("слишком короткие данные".into()));
+        return Err(Error::BadFormat("payload too short".into()));
     }
     let (eph_pub, rest) = blob.split_at(POINT_LEN);
     let (iv, rest) = rest.split_at(IV_LEN);
     let (tag, ciphertext) = rest.split_at(TAG_LEN);
     if eph_pub[0] != 0x04 {
-        return Err(Error::BadFormat("эфемерный ключ".into()));
+        return Err(Error::BadFormat("bad ephemeral key".into()));
     }
 
     let mut shared = ecdh(eph_pub)?;
@@ -226,7 +266,7 @@ impl Piv {
         let outer = tlv_get(&resp, 0x7c).ok_or_else(|| Error::Unexpected("GENERAL AUTHENTICATE".into()))?;
         let shared = tlv_get(outer, 0x82).ok_or_else(|| Error::Unexpected("GENERAL AUTHENTICATE".into()))?;
         if shared.len() != 32 {
-            return Err(Error::Unexpected("длина общего секрета".into()));
+            return Err(Error::Unexpected("shared secret length".into()));
         }
         Ok(shared.to_vec())
     }
@@ -257,7 +297,7 @@ impl Piv {
         let mut resp = self.card.transmit(&apdu, &mut rbuf)?.to_vec();
         loop {
             if resp.len() < 2 {
-                return Err(Error::Unexpected("короткий ответ".into()));
+                return Err(Error::Unexpected("short response".into()));
             }
             let (sw1, sw2) = (resp[resp.len() - 2], resp[resp.len() - 1]);
             out.extend_from_slice(&resp[..resp.len() - 2]);
@@ -279,7 +319,7 @@ fn sw_error(ins: u8, sw: u16) -> Error {
         (INS_GENERAL_AUTH, 0x6982) => Error::SecurityStatus,
         (INS_GENERAL_AUTH, 0x6a80 | 0x6a86) => Error::SlotEmpty,
         (INS_GET_METADATA, 0x6a82) => Error::SlotEmpty,
-        (INS_SELECT, 0x6a82) => Error::Unexpected("PIV-приложение не найдено".into()),
+        (INS_SELECT, 0x6a82) => Error::Unexpected("PIV applet not found".into()),
         _ => Error::Apdu { ins, sw },
     }
 }

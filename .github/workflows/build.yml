@@ -15,9 +15,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-    defaults:
-      run:
-        working-directory: tauri
     steps:
       - uses: actions/checkout@v4
 
@@ -25,15 +22,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: tauri/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tauri/src-tauri
+          workspaces: src-tauri
 
       - run: npm ci
+
+      - name: Typecheck UI
+        run: npx tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --lib dom,es2022 ui/main.ts
 
       - name: Unit tests (crypto, format)
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
@@ -47,21 +46,6 @@ jobs:
           name: yk-encrypter-${{ matrix.os }}
           if-no-files-found: error
           path: |
-            tauri/src-tauri/target/release/bundle/msi/*.msi
-            tauri/src-tauri/target/release/bundle/nsis/*.exe
-            tauri/src-tauri/target/release/bundle/dmg/*.dmg
-            tauri/src-tauri/target/release/bundle/macos/*.app.tar.gz
-
-  swift-macos:
-    name: swift (macOS)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: swift build -c release
-      - run: ./build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: yk-encrypter-swift-macos
-          path: |
-            dist/YkEncrypter.zip
-            dist/YkEncrypter.dmg
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/dmg/*.dmg

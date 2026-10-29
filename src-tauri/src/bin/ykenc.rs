@@ -37,7 +37,7 @@ fn run(args: &[String]) -> core::Result<String> {
         }
         (Some("dec"), 2) => {
             let pin = read_pin();
-            core::decrypt_with_yubikey(&args[1], &pin, || eprintln!("(если включён touch — коснись YubiKey)"))
+            core::decrypt_with_yubikey(&args[1], &pin, || eprintln!("(touch your YubiKey if touch policy is enabled)"))
                 .map(|s| s + "\n")
         }
         (Some("dec-soft"), 3) => {

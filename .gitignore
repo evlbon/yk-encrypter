@@ -1,17 +1,14 @@
-# macOS
+# OS
 .DS_Store
+Thumbs.db
 
-# Swift
-.build/
-dist/
-*.xcodeproj
-.swiftpm/
+# Node / UI bundle
+node_modules/
+ui/dist/
 
-# Tauri / Rust / Node
-tauri/node_modules/
-tauri/ui/dist/
-tauri/src-tauri/target/
-tauri/src-tauri/gen/
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
 
 # Секреты и ключи никогда не коммитим
 *.pin
