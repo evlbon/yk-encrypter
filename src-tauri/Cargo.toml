@@ -36,6 +36,8 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.22"
 zeroize = "1"
 thiserror = "2"
+# скрытый ввод PIN в CLI (macOS/Windows/Linux)
+rpassword = "7"
 
 [profile.release]
 strip = true

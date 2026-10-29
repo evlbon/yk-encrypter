@@ -33,7 +33,16 @@ ykman piv access change-management-key --generate --protect
 - `src-tauri/src/core.rs` — ECDH/HKDF/AES-GCM and PIV over PC/SC (`pcsc` crate, no other YubiKey dependencies).
 - `src-tauri/src/lib.rs` — Tauri commands: `yubikey_present`, `read_public_key`, `encrypt`, `decrypt`; event `yk-touch`.
   Errors are returned as `{ code, message, detail?, tries? }` and localized in the UI.
-- `src-tauri/src/bin/ykenc.rs` — CLI (`pubkey`, `enc`, `dec`, `dec-soft`).
+- `src-tauri/src/bin/ykenc.rs` — CLI (`pubkey`, `enc`, `dec`, `dec-soft`). Plaintext is read from stdin only and the
+  PIN is prompted without echo (or taken from `YK_PIV_PIN`), so neither lands in process arguments or shell history.
+
+## Security properties
+
+- Decryption is refused unless slot 9d has PIN policy ≠ `never` **and** touch policy ≠ `never` (checked via GET METADATA
+  before every operation), so a key generated without `--touch-policy always` cannot be used silently.
+- The UI keeps the PIN only for the duration of one operation; it is cleared afterwards, on mode switch and on window blur.
+- PIN, APDU buffers, ECDH shared secrets, derived AES keys and decrypted plaintext are wrapped in `Zeroizing` and wiped on drop.
+- The stored recipient key is replaced only by pressing ↻; if the connected YubiKey holds a different key, the UI warns.
 - `ui/` — vanilla TypeScript (`main.ts`, `i18n.ts`), bundled by esbuild into `ui/dist/main.js`.
 
 ## Build
@@ -47,6 +56,8 @@ npm run dev                                              # app window in dev mod
 npm run build                                            # bundles in src-tauri/target/release/bundle/
 cargo test --manifest-path src-tauri/Cargo.toml --lib    # crypto and format tests
 cargo run --manifest-path src-tauri/Cargo.toml --bin ykenc -- pubkey
+printf '%s' 'secret text' | ykenc enc piv-9d.pub.pem > msg.txt       # encrypt (no YubiKey needed)
+ykenc dec < msg.txt                                                   # decrypt: PIN prompt + touch
 ```
 
 ## CI

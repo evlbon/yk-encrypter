@@ -39,6 +39,8 @@ textarea, input { user-select: text; -webkit-user-select: text; }
 .spacer { flex: 1; }
 .key { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); font-size: 12px; }
 .key.missing { color: var(--warn); font-family: inherit; }
+.key.mismatch { color: var(--warn); text-decoration: underline dotted; }
+.message.warn { color: var(--warn); }
 
 button {
   font: inherit; color: var(--text); background: var(--panel);

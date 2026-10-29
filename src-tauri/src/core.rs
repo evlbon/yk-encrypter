@@ -1,5 +1,5 @@
 //! Ядро: формат `ykpiv1:`, ECDH/HKDF/AES-GCM и PIV поверх PC/SC.
-//! Совместимо с Swift-версией (../Sources) и TS-модулем (yk-encrypter.ts).
+//! Совместимо с TS-модулем (yk-encrypter.ts) и Swift-версией (тег swift-macos).
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -12,7 +12,7 @@ use p256::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePublicKey, LineEnding
 use p256::{PublicKey, SecretKey};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 pub const PREFIX: &str = "ykpiv1:";
 const POINT_LEN: usize = 65;
@@ -20,6 +20,9 @@ const IV_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const HKDF_INFO: &[u8] = b"yk-encrypter/piv-p256/v1/aes-256-gcm";
+
+/// Секретные байты: обнуляются при drop, включая пути с ошибками.
+pub type Secret = Zeroizing<Vec<u8>>;
 
 /// Ошибки ядра. Display — английский текст для CLI/логов; UI локализует по `code()`.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +49,8 @@ pub enum Error {
     SecurityStatus,
     #[error("slot 9d is empty or holds a non-P-256 key")]
     SlotEmpty,
+    #[error("slot 9d policy is too weak (pin={pin}, touch={touch}); regenerate with --pin-policy always --touch-policy always")]
+    WeakPolicy { pin: Policy, touch: Policy },
     #[error("unexpected YubiKey response: {0}")]
     Unexpected(String),
     #[error("card error: ins=0x{ins:02x} sw=0x{sw:04x}")]
@@ -67,6 +72,7 @@ impl Error {
             Error::PinBlocked => "pin_blocked",
             Error::SecurityStatus => "security_status",
             Error::SlotEmpty => "slot_empty",
+            Error::WeakPolicy { .. } => "weak_policy",
             Error::Unexpected(_) => "unexpected",
             Error::Apdu { .. } => "apdu",
         }
@@ -86,6 +92,7 @@ impl Error {
             Error::BadFormat(s) | Error::BadKey(s) | Error::Unexpected(s) => Some(s.clone()),
             Error::NoService(e) | Error::Pcsc(e) => Some(e.to_string()),
             Error::Apdu { ins, sw } => Some(format!("ins=0x{ins:02x} sw=0x{sw:04x}")),
+            Error::WeakPolicy { pin, touch } => Some(format!("pin={pin}, touch={touch}")),
             _ => None,
         }
     }
@@ -102,14 +109,12 @@ pub fn encrypt(plaintext: &str, recipient_pem: &str) -> Result<String> {
     let recipient = PublicKey::from_public_key_pem(recipient_pem).map_err(|e| Error::BadKey(e.to_string()))?;
     let eph = EphemeralSecret::random(&mut OsRng);
     let eph_pub = eph.public_key().to_encoded_point(false).as_bytes().to_vec();
-    let mut shared = eph.diffie_hellman(&recipient).raw_secret_bytes().to_vec();
-    let out = seal(plaintext, &shared, &eph_pub);
-    shared.zeroize();
-    out
+    let shared: Secret = Zeroizing::new(eph.diffie_hellman(&recipient).raw_secret_bytes().to_vec());
+    seal(plaintext, &shared, &eph_pub)
 }
 
 /// Расшифровывает; `ecdh` получает эфемерную точку (65 байт) и возвращает общий секрет (32 байта).
-pub fn decrypt(payload: &str, ecdh: impl FnOnce(&[u8]) -> Result<Vec<u8>>) -> Result<String> {
+pub fn decrypt(payload: &str, ecdh: impl FnOnce(&[u8]) -> Result<Secret>) -> Result<String> {
     let body = payload
         .strip_prefix(PREFIX)
         .ok_or_else(|| Error::BadFormat(format!("expected {PREFIX}…")))?;
@@ -126,28 +131,28 @@ pub fn decrypt(payload: &str, ecdh: impl FnOnce(&[u8]) -> Result<Vec<u8>>) -> Re
         return Err(Error::BadFormat("bad ephemeral key".into()));
     }
 
-    let mut shared = ecdh(eph_pub)?;
-    let mut key = derive_key(&shared, eph_pub);
-    shared.zeroize();
+    let shared = ecdh(eph_pub)?;
+    let key = derive_key(&shared, eph_pub);
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("key length");
 
-    let cipher = Aes256Gcm::new_from_slice(&key).expect("key length");
-    key.zeroize();
     let mut ct_tag = Vec::with_capacity(ciphertext.len() + TAG_LEN);
     ct_tag.extend_from_slice(ciphertext);
     ct_tag.extend_from_slice(tag);
-    let plain = cipher
-        .decrypt(Nonce::from_slice(iv), Payload { msg: &ct_tag, aad: eph_pub })
-        .map_err(|_| Error::DecryptFailed)?;
-    String::from_utf8(plain).map_err(|_| Error::DecryptFailed)
+    let plain: Secret = Zeroizing::new(
+        cipher
+            .decrypt(Nonce::from_slice(iv), Payload { msg: &ct_tag, aad: eph_pub })
+            .map_err(|_| Error::DecryptFailed)?,
+    );
+    std::str::from_utf8(&plain).map(str::to_owned).map_err(|_| Error::DecryptFailed)
 }
 
 /// Программный ECDH для тестов: приватный ключ P-256 в PEM (PKCS#8).
-pub fn software_ecdh(private_key_pem: &str) -> Result<impl Fn(&[u8]) -> Result<Vec<u8>>> {
+pub fn software_ecdh(private_key_pem: &str) -> Result<impl Fn(&[u8]) -> Result<Secret>> {
     let secret = SecretKey::from_pkcs8_pem(private_key_pem).map_err(|e| Error::BadKey(e.to_string()))?;
     Ok(move |eph_pub: &[u8]| {
         let peer = PublicKey::from_sec1_bytes(eph_pub).map_err(|e| Error::BadKey(e.to_string()))?;
         let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), peer.as_affine());
-        Ok(shared.raw_secret_bytes().to_vec())
+        Ok(Zeroizing::new(shared.raw_secret_bytes().to_vec()))
     })
 }
 
@@ -165,9 +170,8 @@ pub fn fingerprint(pem: &str) -> Option<String> {
 }
 
 fn seal(plaintext: &str, shared: &[u8], eph_pub: &[u8]) -> Result<String> {
-    let mut key = derive_key(shared, eph_pub);
-    let cipher = Aes256Gcm::new_from_slice(&key).expect("key length");
-    key.zeroize();
+    let key = derive_key(shared, eph_pub);
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("key length");
     let mut iv = [0u8; IV_LEN];
     OsRng.fill_bytes(&mut iv);
     let ct_tag = cipher
@@ -183,10 +187,10 @@ fn seal(plaintext: &str, shared: &[u8], eph_pub: &[u8]) -> Result<String> {
     Ok(format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(out)))
 }
 
-fn derive_key(shared: &[u8], eph_pub: &[u8]) -> [u8; KEY_LEN] {
-    let mut key = [0u8; KEY_LEN];
+fn derive_key(shared: &[u8], eph_pub: &[u8]) -> Zeroizing<[u8; KEY_LEN]> {
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     Hkdf::<Sha256>::new(Some(eph_pub), shared)
-        .expand(HKDF_INFO, &mut key)
+        .expand(HKDF_INFO, key.as_mut_slice())
         .expect("hkdf length");
     key
 }
@@ -203,6 +207,64 @@ const INS_VERIFY: u8 = 0x20;
 const INS_GENERAL_AUTH: u8 = 0x87;
 const INS_GET_RESPONSE: u8 = 0xc0;
 const INS_GET_METADATA: u8 = 0xf7;
+
+/// Политика PIN / касания слота (коды из PIV GET METADATA).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Policy {
+    Never,
+    Once,
+    Always,
+    Cached,
+    Unknown,
+}
+
+impl Policy {
+    fn pin(code: u8) -> Policy {
+        match code {
+            1 => Policy::Never,
+            2 => Policy::Once,
+            3 => Policy::Always,
+            _ => Policy::Unknown,
+        }
+    }
+    fn touch(code: u8) -> Policy {
+        match code {
+            1 => Policy::Never,
+            2 => Policy::Always,
+            3 => Policy::Cached,
+            _ => Policy::Unknown,
+        }
+    }
+}
+
+impl std::fmt::Display for Policy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Policy::Never => "never",
+            Policy::Once => "once",
+            Policy::Always => "always",
+            Policy::Cached => "cached",
+            Policy::Unknown => "unknown",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Что лежит в слоте 9d.
+#[derive(Debug, Clone)]
+pub struct SlotInfo {
+    pub point: Vec<u8>,
+    pub pin_policy: Policy,
+    pub touch_policy: Policy,
+}
+
+impl SlotInfo {
+    /// Слабая политика: расшифровка возможна без PIN или без касания.
+    pub fn is_weak(&self) -> bool {
+        self.pin_policy == Policy::Never || self.touch_policy == Policy::Never
+    }
+}
 
 pub struct Piv {
     card: pcsc::Card,
@@ -250,15 +312,13 @@ impl Piv {
         if !(6..=8).contains(&len) || pin.bytes().any(|b| b == 0xff) {
             return Err(Error::PinFormat);
         }
-        let mut padded = [0xffu8; 8];
+        let mut padded = Zeroizing::new([0xffu8; 8]);
         padded[..len].copy_from_slice(pin.as_bytes());
-        let res = self.send(INS_VERIFY, 0x00, 0x80, &padded);
-        padded.zeroize();
-        res.map(|_| ())
+        self.send(INS_VERIFY, 0x00, 0x80, padded.as_slice()).map(|_| ())
     }
 
     /// ECDH на карте: отдаём публичную точку (65 байт), получаем общий секрет (32 байта).
-    pub fn ecdh(&self, peer_point: &[u8]) -> Result<Vec<u8>> {
+    pub fn ecdh(&self, peer_point: &[u8]) -> Result<Secret> {
         let mut inner = tlv(0x82, &[]);
         inner.extend(tlv(0x85, peer_point));
         let dyn_auth = tlv(0x7c, &inner);
@@ -268,42 +328,48 @@ impl Piv {
         if shared.len() != 32 {
             return Err(Error::Unexpected("shared secret length".into()));
         }
-        Ok(shared.to_vec())
+        Ok(Zeroizing::new(shared.to_vec()))
     }
 
-    /// Публичный ключ слота 9d (сырая точка 65 байт). PIN не нужен. YubiKey >= 5.3.
-    pub fn public_key_point(&self) -> Result<Vec<u8>> {
+    /// Метаданные слота 9d: публичная точка и политики. PIN не нужен. YubiKey >= 5.3.
+    pub fn slot_info(&self) -> Result<SlotInfo> {
         let resp = self.send(INS_GET_METADATA, 0x00, SLOT, &[])?;
         match tlv_get(&resp, 0x01) {
             Some([alg]) if *alg == ALG_ECCP256 => {}
             _ => return Err(Error::SlotEmpty),
         }
+        let (pin_policy, touch_policy) = match tlv_get(&resp, 0x02) {
+            Some([pin, touch]) => (Policy::pin(*pin), Policy::touch(*touch)),
+            _ => (Policy::Unknown, Policy::Unknown),
+        };
         let point = tlv_get(&resp, 0x04)
             .and_then(|pk| tlv_get(pk, 0x86))
             .filter(|p| p.len() == POINT_LEN)
             .ok_or_else(|| Error::Unexpected("GET METADATA".into()))?;
-        Ok(point.to_vec())
+        Ok(SlotInfo { point: point.to_vec(), pin_policy, touch_policy })
     }
 
-    fn send(&self, ins: u8, p1: u8, p2: u8, data: &[u8]) -> Result<Vec<u8>> {
+    /// Все буферы обмена — Zeroizing: в них бывают PIN (VERIFY) и общий секрет (GENERAL AUTHENTICATE).
+    fn send(&self, ins: u8, p1: u8, p2: u8, data: &[u8]) -> Result<Secret> {
         assert!(data.len() <= 255);
-        let mut apdu = vec![0x00, ins, p1, p2];
+        let mut apdu: Secret = Zeroizing::new(vec![0x00, ins, p1, p2]);
         if !data.is_empty() {
             apdu.push(data.len() as u8);
             apdu.extend_from_slice(data);
         }
-        let mut out = Vec::new();
-        let mut rbuf = [0u8; pcsc::MAX_BUFFER_SIZE];
-        let mut resp = self.card.transmit(&apdu, &mut rbuf)?.to_vec();
+        let mut out: Secret = Zeroizing::new(Vec::new());
+        let mut rbuf = Zeroizing::new([0u8; pcsc::MAX_BUFFER_SIZE]);
+        let mut resp_len = self.card.transmit(&apdu, rbuf.as_mut_slice())?.len();
         loop {
-            if resp.len() < 2 {
+            if resp_len < 2 {
                 return Err(Error::Unexpected("short response".into()));
             }
-            let (sw1, sw2) = (resp[resp.len() - 2], resp[resp.len() - 1]);
-            out.extend_from_slice(&resp[..resp.len() - 2]);
+            let resp = &rbuf[..resp_len];
+            let (sw1, sw2) = (resp[resp_len - 2], resp[resp_len - 1]);
+            out.extend_from_slice(&resp[..resp_len - 2]);
             if sw1 == 0x61 {
-                let mut rbuf = [0u8; pcsc::MAX_BUFFER_SIZE];
-                resp = self.card.transmit(&[0x00, INS_GET_RESPONSE, 0, 0, sw2], &mut rbuf)?.to_vec();
+                let get = [0x00, INS_GET_RESPONSE, 0, 0, sw2];
+                resp_len = self.card.transmit(&get, rbuf.as_mut_slice())?.len();
                 continue;
             }
             let sw = u16::from(sw1) << 8 | u16::from(sw2);
@@ -358,20 +424,26 @@ fn tlv_get(buf: &[u8], want: u8) -> Option<&[u8]> {
     None
 }
 
-/// Полный цикл расшифровки на YubiKey. `on_touch` вызывается перед ECDH (момент, когда нужно касание).
+/// Полный цикл расшифровки на YubiKey. Отказывает, если политика слота позволяет расшифровку
+/// без PIN или без касания. `on_touch` вызывается перед ECDH (момент, когда нужно касание).
 pub fn decrypt_with_yubikey(payload: &str, pin: &str, on_touch: impl FnOnce()) -> Result<String> {
     decrypt(payload, |eph_pub| {
         let piv = Piv::open()?;
+        let info = piv.slot_info()?;
+        if info.is_weak() {
+            return Err(Error::WeakPolicy { pin: info.pin_policy, touch: info.touch_policy });
+        }
         piv.verify_pin(pin)?;
         on_touch();
         piv.ecdh(eph_pub)
     })
 }
 
-/// Публичный ключ слота 9d с YubiKey (PEM).
-pub fn read_public_key_pem() -> Result<String> {
+/// Слот 9d с YubiKey: PEM публичного ключа и политики.
+pub fn read_slot() -> Result<(String, SlotInfo)> {
     let piv = Piv::open()?;
-    pem_from_point(&piv.public_key_point()?)
+    let info = piv.slot_info()?;
+    Ok((pem_from_point(&info.point)?, info))
 }
 
 #[cfg(test)]
@@ -432,5 +504,18 @@ mod tests {
         assert_eq!(tlv_get(&buf, 0x01), Some(&[0x11][..]));
         assert_eq!(tlv_get(tlv_get(&buf, 0x04).unwrap(), 0x86), Some(&[0xaa][..]));
         assert_eq!(tlv_get(&buf, 0x05), None);
+    }
+
+    #[test]
+    fn policy_codes_and_weakness() {
+        let strong = SlotInfo { point: vec![], pin_policy: Policy::pin(3), touch_policy: Policy::touch(2) };
+        assert_eq!((strong.pin_policy, strong.touch_policy), (Policy::Always, Policy::Always));
+        assert!(!strong.is_weak());
+        let cached = SlotInfo { point: vec![], pin_policy: Policy::pin(2), touch_policy: Policy::touch(3) };
+        assert!(!cached.is_weak());
+        let no_touch = SlotInfo { point: vec![], pin_policy: Policy::pin(3), touch_policy: Policy::touch(1) };
+        assert!(no_touch.is_weak());
+        let no_pin = SlotInfo { point: vec![], pin_policy: Policy::pin(1), touch_policy: Policy::touch(2) };
+        assert!(no_pin.is_weak());
     }
 }

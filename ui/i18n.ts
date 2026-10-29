@@ -8,7 +8,7 @@ const dict = {
     keyMissing: "public key not read",
     keyBroken: "stored key is corrupted",
     keyHint: "Fingerprint of the public key used for encryption",
-    refreshHint: "Read the public key from the YubiKey",
+    refreshHint: "Read the public key from the connected YubiKey and use it for encryption",
     modeEncrypt: "Encrypt",
     modeDecrypt: "Decrypt",
     inputText: "Text",
@@ -25,6 +25,9 @@ const dict = {
     touch: "Touch your YubiKey…",
     needKeyForDecrypt: "Insert the YubiKey to decrypt",
     needPubKey: "Read the public key from the YubiKey first (↻ button)",
+    mismatch: "The connected YubiKey holds a different key ({fp}). Encryption uses the stored key; press ↻ to switch.",
+    weakPolicy:
+      "Slot policy is weak (PIN: {pin}, touch: {touch}) — decryption will be refused. Regenerate with --pin-policy always --touch-policy always.",
     errors: {
       bad_format: "Invalid data format",
       decrypt_failed: "Decryption failed: different YubiKey or corrupted data",
@@ -37,6 +40,7 @@ const dict = {
       pin_blocked: "PIN is blocked. Unblock it with the PUK: ykman piv access unblock-pin",
       security_status: "The card refused: PIN not verified",
       slot_empty: "Slot 9d is empty or holds a non-P-256 key",
+      weak_policy: "Refused: slot 9d allows decryption without PIN or touch. Regenerate the key with --pin-policy always --touch-policy always",
       unexpected: "Unexpected response from the YubiKey",
       apdu: "Card error",
       internal: "Internal error",
@@ -49,7 +53,7 @@ const dict = {
     keyMissing: "публичный ключ не считан",
     keyBroken: "сохранённый ключ повреждён",
     keyHint: "Отпечаток публичного ключа, которым шифруем",
-    refreshHint: "Считать публичный ключ с YubiKey",
+    refreshHint: "Считать публичный ключ с подключённого YubiKey и использовать его для шифрования",
     modeEncrypt: "Зашифровать",
     modeDecrypt: "Расшифровать",
     inputText: "Текст",
@@ -66,6 +70,9 @@ const dict = {
     touch: "Коснитесь YubiKey…",
     needKeyForDecrypt: "Для расшифровки вставьте YubiKey",
     needPubKey: "Сначала считайте публичный ключ с YubiKey (кнопка ↻)",
+    mismatch: "В подключённом YubiKey другой ключ ({fp}). Шифрование идёт сохранённым ключом; нажмите ↻, чтобы перейти на новый.",
+    weakPolicy:
+      "Политика слота слабая (PIN: {pin}, касание: {touch}) — расшифровка будет отклонена. Перегенерируйте ключ с --pin-policy always --touch-policy always.",
     errors: {
       bad_format: "Неверный формат данных",
       decrypt_failed: "Не удалось расшифровать: другой YubiKey или данные повреждены",
@@ -78,6 +85,7 @@ const dict = {
       pin_blocked: "PIN заблокирован. Разблокируйте через PUK: ykman piv access unblock-pin",
       security_status: "Карта отказала: PIN не проверен",
       slot_empty: "Слот 9d пуст или ключ не P-256",
+      weak_policy: "Отказ: слот 9d позволяет расшифровку без PIN или без касания. Перегенерируйте ключ с --pin-policy always --touch-policy always",
       unexpected: "Неожиданный ответ YubiKey",
       apdu: "Ошибка карты",
       internal: "Внутренняя ошибка",
@@ -104,15 +112,20 @@ export function strings(lang: Lang): Strings {
   return dict[lang];
 }
 
+/** Подстановка {name} → значение. */
+export function fmt(template: string, vars: Record<string, string | number | undefined>): string {
+  return template.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "?"));
+}
+
 /** Локализует ошибку из Rust; неизвестные коды показывают английский текст из бэкенда. */
 export function formatError(lang: Lang, e: unknown): string {
   const err = e as Partial<ApiError> | undefined;
   if (!err || typeof err !== "object" || !err.code) return String(e);
   const t = dict[lang].errors[err.code];
   if (!t) return err.message ?? err.code;
-  let text = t.replace("{tries}", String(err.tries ?? "?"));
+  let text = fmt(t, { tries: err.tries });
   // Детали показываем только для технических ошибок, где они помогают.
-  if (err.detail && ["pcsc", "no_service", "apdu", "unexpected", "bad_key"].includes(err.code)) {
+  if (err.detail && ["pcsc", "no_service", "apdu", "unexpected", "bad_key", "weak_policy"].includes(err.code)) {
     text += ` (${err.detail})`;
   }
   return text;
