@@ -3,6 +3,8 @@ name = "yk-encrypter"
 version = "1.0.0"
 description = "Шифрование строк с помощью YubiKey (PIV slot 9d, P-256)"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/evlbon/yk-encrypter"
 default-run = "yk-encrypter"
 
 [lib]

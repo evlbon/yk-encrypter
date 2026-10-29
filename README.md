@@ -43,6 +43,15 @@ ykman piv access change-management-key --generate --protect
 - The UI keeps the PIN only for the duration of one operation; it is cleared afterwards, on mode switch and on window blur.
 - PIN, APDU buffers, ECDH shared secrets, derived AES keys and decrypted plaintext are wrapped in `Zeroizing` and wiped on drop.
 - The stored recipient key is replaced only by pressing ↻; if the connected YubiKey holds a different key, the UI warns.
+
+**Disclaimer.** This code has had a code review but no independent security audit. The cryptographic construction is
+standard (ECDH P-256 → HKDF-SHA256 → AES-256-GCM) and the private key never leaves the YubiKey, but if you rely on it
+for anything serious, read the ~400 lines of `core.rs` yourself. Losing the YubiKey means losing everything encrypted
+with it: there is no backup key unless you encrypt for a second YubiKey too.
+
+## License
+
+MIT, see `LICENSE`.
 - `ui/` — vanilla TypeScript (`main.ts`, `i18n.ts`), bundled by esbuild into `ui/dist/main.js`.
 
 ## Build
