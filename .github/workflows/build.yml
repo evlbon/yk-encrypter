@@ -111,7 +111,8 @@ jobs:
           cat > notes.md <<'EOF'
           Installers are not code-signed.
 
-          - **macOS**: on first launch macOS will refuse the app → System Settings → Privacy & Security → *Open Anyway*.
+          - **macOS**: ad-hoc signed, not notarized. On first launch: System Settings → Privacy & Security → *Open Anyway*,
+            or `xattr -dr com.apple.quarantine "/Applications/YubiKey Encrypter.app"`.
           - **Windows**: SmartScreen → *More info* → *Run anyway*. The built-in smart card service is enough, no drivers.
 
           Requires a YubiKey with a P-256 key in PIV slot 9d (`--pin-policy always --touch-policy always`), see README.

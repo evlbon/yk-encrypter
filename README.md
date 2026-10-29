@@ -30,9 +30,20 @@ Grab the installer for your OS from the [latest release](https://github.com/evlb
 
 | OS      | File                      | Notes                                                                                   |
 |---------|---------------------------|-----------------------------------------------------------------------------------------|
-| macOS   | `*.dmg` (Apple Silicon)   | Unsigned: first launch → System Settings → Privacy & Security → **Open Anyway**         |
+| macOS   | `*.dmg` (Apple Silicon)   | Ad-hoc signed, not notarized — see below                                                |
 | Windows | `*.msi` or `*-setup.exe`  | Unsigned: SmartScreen → **More info** → **Run anyway**. No drivers needed (built-in smart card service) |
 | Linux   | build from source         | needs `pcscd` running and `libpcsclite`                                                 |
+
+**macOS first launch.** The app is ad-hoc signed (no Apple Developer ID, no notarization), so Gatekeeper refuses it
+once. Either open System Settings → Privacy & Security, scroll down and press **Open Anyway**, or clear the
+quarantine flag in Terminal and launch normally:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/YubiKey Encrypter.app"
+```
+
+If macOS says the app is *damaged* instead, the download was tampered with or the bundle signature is broken — re-download
+from the release page rather than forcing it open.
 
 ## Quick start
 
@@ -101,7 +112,8 @@ Known limitation: if the firmware predates 5.3, GET METADATA fails and the app r
 
 ## CLI
 
-`ykenc` ships next to the app binary in `src-tauri/target/release/` after `npm run build` (not in the installers).
+`ykenc` ships inside the app: `YubiKey Encrypter.app/Contents/MacOS/ykenc` on macOS, next to `yk-encrypter.exe` in the
+install directory on Windows. After `npm run build` it is also in `src-tauri/target/release/`.
 
 ```sh
 ykenc pubkey                                     # PEM of slot 9d + its policies (stderr)

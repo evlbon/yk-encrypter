@@ -2,7 +2,7 @@
   "name": "yk-encrypter-tauri",
   "private": true,
   "license": "MIT",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "build:ui": "esbuild ui/main.ts --bundle --format=esm --outfile=ui/dist/main.js --target=es2022",

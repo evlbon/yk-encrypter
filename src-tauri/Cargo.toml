@@ -1,6 +1,6 @@
 [package]
 name = "yk-encrypter"
-version = "1.0.0"
+version = "1.0.1"
 description = "Шифрование строк с помощью YubiKey (PIV slot 9d, P-256)"
 edition = "2021"
 license = "MIT"
