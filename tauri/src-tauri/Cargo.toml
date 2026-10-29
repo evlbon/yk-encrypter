@@ -22,11 +22,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# YubiKey PIV поверх PC/SC (winscard на Windows, PCSC.framework на macOS, pcsclite на Linux)
-yubikey = "0.8"
-# Криптография (версии согласованы с зависимостями yubikey)
+# PC/SC: winscard на Windows, PCSC.framework на macOS, pcsclite на Linux
+pcsc = "2"
+# Криптография
 p256 = { version = "0.13", features = ["ecdh", "pem"] }
 hkdf = "0.12"
 sha2 = "0.10"

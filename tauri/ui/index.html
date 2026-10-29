@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>YubiKey Encrypter</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="status">
+      <span class="dot" id="dot"></span>
+      <span id="presence">YubiKey не найден</span>
+      <span class="spacer"></span>
+      <span class="key" id="keyinfo" title="Отпечаток публичного ключа, которым шифруем">публичный ключ не считан</span>
+      <button class="icon" id="refresh" title="Считать публичный ключ с YubiKey">↻</button>
+    </header>
+
+    <div class="segmented" role="tablist">
+      <button class="seg active" data-mode="encrypt" role="tab">Зашифровать</button>
+      <button class="seg" data-mode="decrypt" role="tab">Расшифровать</button>
+    </div>
+
+    <section class="field">
+      <div class="row">
+        <label for="input" id="inputLabel">Текст</label>
+        <span class="spacer"></span>
+        <button class="link" id="paste">Вставить</button>
+        <button class="link" id="clear">Очистить</button>
+      </div>
+      <textarea id="input" spellcheck="false"></textarea>
+    </section>
+
+    <section class="field pin hidden" id="pinRow">
+      <label for="pin">PIN</label>
+      <input id="pin" type="password" placeholder="PIN PIV-приложения" autocomplete="off" maxlength="8" />
+    </section>
+
+    <section class="actions">
+      <button class="primary" id="run">Зашифровать</button>
+      <span class="message" id="message"></span>
+    </section>
+
+    <section class="field">
+      <div class="row">
+        <label for="output">Результат</label>
+        <span class="spacer"></span>
+        <button class="link" id="copy" disabled>Скопировать</button>
+      </div>
+      <textarea id="output" readonly spellcheck="false"></textarea>
+    </section>
+  </main>
+  <script type="module" src="./dist/main.js"></script>
+</body>
+</html>
