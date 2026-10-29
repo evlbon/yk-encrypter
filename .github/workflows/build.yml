@@ -32,7 +32,7 @@ jobs:
       - run: npm ci
 
       - name: Typecheck UI
-        run: npx tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --lib dom,es2022 ui/main.ts
+        run: npx tsc -p ui/tsconfig.json
 
       - name: Unit tests (crypto, format)
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
