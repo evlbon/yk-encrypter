@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Swift
+.build/
+dist/
+*.xcodeproj
+.swiftpm/
+
+# Tauri / Rust / Node
+tauri/node_modules/
+tauri/ui/dist/
+tauri/src-tauri/target/
+tauri/src-tauri/gen/
+
+# Секреты и ключи никогда не коммитим
+*.pin
+*.key
