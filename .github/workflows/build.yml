@@ -52,16 +52,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Ключ кэша не зависит от имени задачи/workflow; кэш пишется даже при падении,
+      # чтобы следующий прогон не компилировал ~400 крейтов заново.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: tauri-${{ matrix.os }}
+          cache-on-failure: true
 
       - run: npm ci
 
       - name: Typecheck UI
         run: npx tsc -p ui/tsconfig.json
 
+      # Тесты — только на одной ОС: они собирают всё в debug-профиле, а это вторая полная компиляция.
       - name: Unit tests (crypto, format)
+        if: matrix.os == 'macos-latest'
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
       - name: Build bundles
