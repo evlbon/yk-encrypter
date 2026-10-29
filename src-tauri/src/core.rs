@@ -7,10 +7,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hkdf::Hkdf;
 use p256::ecdh::EphemeralSecret;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePublicKey, LineEnding};
 use p256::{PublicKey, SecretKey};
-use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -107,8 +106,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Шифрует публичным ключом YubiKey (PEM, SPKI P-256).
 pub fn encrypt(plaintext: &str, recipient_pem: &str) -> Result<String> {
     let recipient = PublicKey::from_public_key_pem(recipient_pem).map_err(|e| Error::BadKey(e.to_string()))?;
-    let eph = EphemeralSecret::random(&mut OsRng);
-    let eph_pub = eph.public_key().to_encoded_point(false).as_bytes().to_vec();
+    let eph = EphemeralSecret::try_generate().map_err(|_| Error::Unexpected("system RNG".into()))?;
+    let eph_pub = eph.public_key().to_sec1_bytes().into_vec(); // uncompressed, 65 байт
+    debug_assert_eq!(eph_pub.len(), POINT_LEN);
     let shared: Secret = Zeroizing::new(eph.diffie_hellman(&recipient).raw_secret_bytes().to_vec());
     seal(plaintext, &shared, &eph_pub)
 }
@@ -138,9 +138,10 @@ pub fn decrypt(payload: &str, ecdh: impl FnOnce(&[u8]) -> Result<Secret>) -> Res
     let mut ct_tag = Vec::with_capacity(ciphertext.len() + TAG_LEN);
     ct_tag.extend_from_slice(ciphertext);
     ct_tag.extend_from_slice(tag);
+    let nonce = Nonce::try_from(iv).map_err(|_| Error::BadFormat("iv".into()))?;
     let plain: Secret = Zeroizing::new(
         cipher
-            .decrypt(Nonce::from_slice(iv), Payload { msg: &ct_tag, aad: eph_pub })
+            .decrypt(&nonce, Payload { msg: &ct_tag, aad: eph_pub })
             .map_err(|_| Error::DecryptFailed)?,
     );
     std::str::from_utf8(&plain).map(str::to_owned).map_err(|_| Error::DecryptFailed)
@@ -151,8 +152,7 @@ pub fn software_ecdh(private_key_pem: &str) -> Result<impl Fn(&[u8]) -> Result<S
     let secret = SecretKey::from_pkcs8_pem(private_key_pem).map_err(|e| Error::BadKey(e.to_string()))?;
     Ok(move |eph_pub: &[u8]| {
         let peer = PublicKey::from_sec1_bytes(eph_pub).map_err(|e| Error::BadKey(e.to_string()))?;
-        let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), peer.as_affine());
-        Ok(Zeroizing::new(shared.raw_secret_bytes().to_vec()))
+        Ok(Zeroizing::new(secret.diffie_hellman(&peer).raw_secret_bytes().to_vec()))
     })
 }
 
@@ -165,7 +165,7 @@ pub fn pem_from_point(point: &[u8]) -> Result<String> {
 /// Короткий отпечаток публичного ключа для UI (SHA-256 от точки, 4 байта).
 pub fn fingerprint(pem: &str) -> Option<String> {
     let key = PublicKey::from_public_key_pem(pem).ok()?;
-    let digest = Sha256::digest(key.to_encoded_point(false).as_bytes());
+    let digest = Sha256::digest(key.to_sec1_bytes());
     Some(digest[..4].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":"))
 }
 
@@ -173,9 +173,9 @@ fn seal(plaintext: &str, shared: &[u8], eph_pub: &[u8]) -> Result<String> {
     let key = derive_key(shared, eph_pub);
     let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("key length");
     let mut iv = [0u8; IV_LEN];
-    OsRng.fill_bytes(&mut iv);
+    getrandom::fill(&mut iv).map_err(|_| Error::Unexpected("system RNG".into()))?;
     let ct_tag = cipher
-        .encrypt(Nonce::from_slice(&iv), Payload { msg: plaintext.as_bytes(), aad: eph_pub })
+        .encrypt(&Nonce::from(iv), Payload { msg: plaintext.as_bytes(), aad: eph_pub })
         .map_err(|_| Error::Unexpected("AES-GCM".into()))?;
     let (ciphertext, tag) = ct_tag.split_at(ct_tag.len() - TAG_LEN);
 
@@ -452,7 +452,7 @@ mod tests {
     use p256::pkcs8::EncodePrivateKey;
 
     fn keypair() -> (String, String) {
-        let secret = SecretKey::random(&mut OsRng);
+        let secret = SecretKey::try_generate().unwrap();
         let priv_pem = secret.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
         let pub_pem = secret.public_key().to_public_key_pem(LineEnding::LF).unwrap();
         (priv_pem, pub_pem)
@@ -493,7 +493,7 @@ mod tests {
     fn pem_point_roundtrip_and_fingerprint() {
         let (_, pub_pem) = keypair();
         let key = PublicKey::from_public_key_pem(&pub_pem).unwrap();
-        let point = key.to_encoded_point(false).as_bytes().to_vec();
+        let point = key.to_sec1_bytes().into_vec();
         assert_eq!(pem_from_point(&point).unwrap().trim(), pub_pem.trim());
         assert_eq!(fingerprint(&pub_pem).unwrap().len(), 11);
     }

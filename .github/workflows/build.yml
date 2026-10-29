@@ -70,6 +70,13 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
+      # Известные уязвимости в дереве зависимостей (RustSec). Падает только на уязвимостях, не на warning'ах.
+      - name: cargo audit
+        if: matrix.os == 'macos-latest'
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --file src-tauri/Cargo.lock
+
       - name: Build bundles
         run: npx tauri build
 
@@ -97,7 +104,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          ls -la bundles
+          # артефакты приходят в подпапках dmg/ msi/ nsis/ — собираем плоский список файлов
+          mapfile -t FILES < <(find bundles -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) | sort)
+          printf '%s\n' "${FILES[@]}"
+          [ "${#FILES[@]}" -ge 3 ] || { echo "expected dmg + msi + exe, got ${#FILES[@]} files"; exit 1; }
           cat > notes.md <<'EOF'
           Installers are not code-signed.
 
@@ -111,4 +121,4 @@ jobs:
             --title "v$VERSION" \
             --notes-file notes.md \
             --generate-notes \
-            bundles/*
+            "${FILES[@]}"
